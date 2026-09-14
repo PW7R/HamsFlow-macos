@@ -60,6 +60,8 @@ actor AppleSpeechEngine: TranscriptionEngine {
         }
     }
 
+    private var arabicFinishContinuation: CheckedContinuation<Void, Never>?
+
     private func startArabic(
         chunkContinuation: AsyncThrowingStream<TranscriptionChunk, Error>.Continuation,
         chunks: AsyncThrowingStream<TranscriptionChunk, Error>
@@ -76,22 +78,25 @@ actor AppleSpeechEngine: TranscriptionEngine {
         self.sfRequest = request
 
         self.sfTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            let text = result?.bestTranscription.formattedString
+            let rawText = result?.bestTranscription.formattedString
+            let text = rawText?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{200E}\u{200F}")))
             let isFinal = result?.isFinal ?? false
-            let nsErrorCode = (error as NSError?)?.code
-            let nsErrorDomain = (error as NSError?)?.domain
-            let errDescription = error?.localizedDescription
+            let nsError = error as NSError?
+            let nsErrorCode = nsError?.code
+            let nsErrorDomain = nsError?.domain
 
             Task { [weak self] in
                 guard let self else { return }
-                if let text {
+                if let text, !text.isEmpty {
                     await self.updateArabicText(text, isFinal: isFinal)
                 }
-                if let errDescription {
-                    if nsErrorCode != 216 && nsErrorDomain != "kAFAssistantErrorDomain" {
-                        Log.speech.error("Arabic recognition task error: \(errDescription)")
+                if let error {
+                    // Benign codes: 1110 (no speech), 216/kAFAssistantErrorDomain (request canceled/ended)
+                    let isBenign = nsErrorCode == 1110 || nsErrorCode == 216 || nsErrorDomain == "kAFAssistantErrorDomain"
+                    if !isBenign {
+                        Log.speech.error("Arabic recognition error [\(nsErrorDomain ?? "", privacy: .public):\(nsErrorCode ?? 0, privacy: .public)]: \(error.localizedDescription, privacy: .public)")
                     }
-                    await self.finishArabicContinuation()
+                    await self.finishArabicContinuation(error: isBenign ? nil : error)
                 }
             }
         }
@@ -103,16 +108,24 @@ actor AppleSpeechEngine: TranscriptionEngine {
         finalizedText = text
         chunkContinuation?.yield(TranscriptionChunk(text: text, isFinal: isFinal))
         if isFinal {
+            arabicFinishContinuation?.resume()
+            arabicFinishContinuation = nil
             chunkContinuation?.finish()
             chunkContinuation = nil
         }
     }
 
-    private func finishArabicContinuation() {
+    private func finishArabicContinuation(error: Error? = nil) {
+        arabicFinishContinuation?.resume()
+        arabicFinishContinuation = nil
         if !finalizedText.isEmpty {
             chunkContinuation?.yield(TranscriptionChunk(text: finalizedText, isFinal: true))
+            chunkContinuation?.finish()
+        } else if let error {
+            chunkContinuation?.finish(throwing: error)
+        } else {
+            chunkContinuation?.finish()
         }
-        chunkContinuation?.finish()
         chunkContinuation = nil
     }
 
@@ -172,10 +185,23 @@ actor AppleSpeechEngine: TranscriptionEngine {
         }
     }
 
+    private func timeoutArabicFinish() {
+        arabicFinishContinuation?.resume()
+        arabicFinishContinuation = nil
+    }
+
     func finish() async {
         if isArabic {
             sfRequest?.endAudio()
-            try? await Task.sleep(for: .milliseconds(350))
+            if sfTask != nil && chunkContinuation != nil {
+                await withCheckedContinuation { cont in
+                    self.arabicFinishContinuation = cont
+                    Task { [weak self] in
+                        try? await Task.sleep(for: .milliseconds(1200))
+                        await self?.timeoutArabicFinish()
+                    }
+                }
+            }
             if let continuation = chunkContinuation {
                 if !finalizedText.isEmpty {
                     continuation.yield(TranscriptionChunk(text: finalizedText, isFinal: true))

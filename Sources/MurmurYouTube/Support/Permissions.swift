@@ -2,14 +2,12 @@ import AVFoundation
 import AppKit
 import ApplicationServices
 import Foundation
+import Speech
 
-/// Murmur YouTube needs two grants, and neither can be worked around:
-/// - **Microphone** — obviously.
+/// HamsFlow requires grants to operate seamlessly on macOS:
+/// - **Microphone** — audio capture.
+/// - **Speech Recognition** — on-device speech transcription for Arabic and native dictation.
 /// - **Accessibility** — for both the `CGEventTap` (hotkey) and the AX text insert.
-///
-/// Accessibility has no programmatic request; the OS only shows the prompt, and the user
-/// must toggle it in System Settings. TCC also keys on the code signature, so re-signing
-/// the app resets the grant.
 @MainActor
 enum Permissions {
     static var hasAccessibility: Bool {
@@ -20,11 +18,13 @@ enum Permissions {
         AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
+    static var hasSpeechRecognition: Bool {
+        SFSpeechRecognizer.authorizationStatus() == .authorized
+    }
+
     /// Shows the system Accessibility prompt if the app isn't yet trusted.
     @discardableResult
     static func promptForAccessibility() -> Bool {
-        // Spelled out rather than using `kAXTrustedCheckOptionPrompt`, which imports as a
-        // mutable global and so isn't usable from concurrency-checked code.
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
@@ -40,6 +40,38 @@ enum Permissions {
         }
     }
 
+    static func requestSpeechRecognition() async -> Bool {
+        enableSystemDictationDefaults()
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    continuation.resume(returning: status == .authorized)
+                }
+            }
+        default:
+            return false
+        }
+    }
+
+    /// Pre-configures macOS dictation defaults to ensure SFSpeechRecognizer doesn't fail with kLSRErrorDomain 201
+    static func enableSystemDictationDefaults() {
+        let dictationPrefs = "com.apple.speech.recognition.AppleSpeechRecognition.prefs"
+        let assistantPrefs = "com.apple.assistant.support"
+        let hitoolboxPrefs = "com.apple.HIToolbox"
+
+        CFPreferencesSetAppValue("DictationIMMasterDictationEnabled" as CFString, kCFBooleanTrue, dictationPrefs as CFString)
+        CFPreferencesAppSynchronize(dictationPrefs as CFString)
+
+        CFPreferencesSetAppValue("Assistant Enabled" as CFString, kCFBooleanTrue, assistantPrefs as CFString)
+        CFPreferencesAppSynchronize(assistantPrefs as CFString)
+
+        CFPreferencesSetAppValue("AppleDictationAutoEnable" as CFString, 1 as CFNumber, hitoolboxPrefs as CFString)
+        CFPreferencesAppSynchronize(hitoolboxPrefs as CFString)
+    }
+
     static func openAccessibilitySettings() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
         NSWorkspace.shared.open(url)
@@ -49,4 +81,15 @@ enum Permissions {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
         NSWorkspace.shared.open(url)
     }
+
+    static func openSpeechRecognitionSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition")!
+        NSWorkspace.shared.open(url)
+    }
+
+    static func openDictationSettings() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.keyboard?Dictation")!
+        NSWorkspace.shared.open(url)
+    }
 }
+

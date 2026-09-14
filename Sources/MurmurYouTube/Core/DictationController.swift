@@ -216,6 +216,13 @@ final class DictationController {
                     return
                 }
 
+                if Settings.shared.language == .arabic {
+                    guard await Permissions.requestSpeechRecognition() else {
+                        fail("Speech Recognition is off. Enable it in System Settings ▸ Privacy & Security ▸ Speech Recognition.")
+                        return
+                    }
+                }
+
                 let engine = makeEngine()
                 self.engine = engine
 
@@ -228,7 +235,7 @@ final class DictationController {
                 // kills the process. Parakeet is the flexible one (its `feed` converts
                 // int16/int32/float32), so the strict engine picks the format and the
                 // tolerant engine adapts. Both still replay the identical buffers.
-                let formatOwner: any TranscriptionEngine = isComparing ? AppleSpeechEngine() : engine
+                let formatOwner: any TranscriptionEngine = isComparing ? AppleSpeechEngine(locale: Settings.shared.language.locale) : engine
                 guard let format = await formatOwner.preferredInputFormat() else {
                     throw TranscriptionError.noAudioFormat
                 }

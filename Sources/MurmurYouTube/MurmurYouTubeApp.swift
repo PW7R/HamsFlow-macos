@@ -72,6 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // before the first dictation.
         RunLog.regenerate()
 
+        // Ensure system dictation defaults are configured and permissions requested
+        Permissions.enableSystemDictationDefaults()
+        Task {
+            _ = await Permissions.requestMicrophone()
+            _ = await Permissions.requestSpeechRecognition()
+        }
+
         // Parakeet's models take ~20s to load from disk, and that cost lands on whichever
         // dictation touches them first — so the first hold after every launch would stall
         // with the HUD showing nothing. Warm them in the background instead, but only when
@@ -258,6 +265,9 @@ private struct MenuContent: View {
         }
         if !Permissions.hasMicrophone {
             Button("Grant Microphone…") { Permissions.openMicrophoneSettings() }
+        }
+        if !Permissions.hasSpeechRecognition {
+            Button("Grant Speech Recognition…") { Permissions.openSpeechRecognitionSettings() }
         }
 
         Button("Quit HamsFlow") { NSApp.terminate(nil) }

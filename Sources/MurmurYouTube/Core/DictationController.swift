@@ -15,8 +15,11 @@ func engineForCurrentSetting() -> any TranscriptionEngine {
     // Always invoked from `beginDictation`, which runs on the main actor.
     MainActor.assumeIsolated {
         switch Settings.shared.engine {
-        case .apple: AppleSpeechEngine()
-        case .parakeet: ParakeetEngine()
+        case .apple:
+            let locale = Settings.shared.language.locale
+            return AppleSpeechEngine(locale: locale)
+        case .parakeet:
+            return ParakeetEngine()
         }
     }
 }

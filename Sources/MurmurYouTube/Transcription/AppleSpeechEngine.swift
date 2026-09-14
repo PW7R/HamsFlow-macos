@@ -10,10 +10,20 @@ import Speech
 actor AppleSpeechEngine: TranscriptionEngine {
     private let locale: Locale
 
+    private var isArabic: Bool {
+        locale.identifier.starts(with: "ar") || (locale.language.languageCode?.identifier ?? "") == "ar"
+    }
+
+    // Modern SpeechAnalyzer (macOS 15/26) for English and locales supported by SpeechTranscriber
     private var transcriber: SpeechTranscriber?
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
+
+    // On-device SFSpeechRecognizer for Arabic (ar-SA)
+    private var sfRecognizer: SFSpeechRecognizer?
+    private var sfRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var sfTask: SFSpeechRecognitionTask?
 
     /// Text the engine has committed. Volatile results are appended on top for display
     /// but discarded as soon as a final result covering the same range arrives.
@@ -25,6 +35,9 @@ actor AppleSpeechEngine: TranscriptionEngine {
     }
 
     func preferredInputFormat() async -> AVAudioFormat? {
+        if isArabic {
+            return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)
+        }
         let resolvedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale)
             ?? Locale(identifier: "en-US")
         let module = transcriber ?? Self.makeTranscriber(locale: resolvedLocale)
@@ -36,6 +49,77 @@ actor AppleSpeechEngine: TranscriptionEngine {
     }
 
     func start() async throws -> AsyncThrowingStream<TranscriptionChunk, Error> {
+        finalizedText = ""
+        let (chunks, chunkContinuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
+        self.chunkContinuation = chunkContinuation
+
+        if isArabic {
+            return try startArabic(chunkContinuation: chunkContinuation, chunks: chunks)
+        } else {
+            return try await startModern(chunkContinuation: chunkContinuation, chunks: chunks)
+        }
+    }
+
+    private func startArabic(
+        chunkContinuation: AsyncThrowingStream<TranscriptionChunk, Error>.Continuation,
+        chunks: AsyncThrowingStream<TranscriptionChunk, Error>
+    ) throws -> AsyncThrowingStream<TranscriptionChunk, Error> {
+        let arabicLocale = Locale(identifier: "ar-SA")
+        guard let recognizer = SFSpeechRecognizer(locale: arabicLocale), recognizer.isAvailable else {
+            throw TranscriptionError.localeUnsupported(locale)
+        }
+        self.sfRecognizer = recognizer
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+        request.shouldReportPartialResults = true
+        self.sfRequest = request
+
+        self.sfTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            let text = result?.bestTranscription.formattedString
+            let isFinal = result?.isFinal ?? false
+            let nsErrorCode = (error as NSError?)?.code
+            let nsErrorDomain = (error as NSError?)?.domain
+            let errDescription = error?.localizedDescription
+
+            Task { [weak self] in
+                guard let self else { return }
+                if let text {
+                    await self.updateArabicText(text, isFinal: isFinal)
+                }
+                if let errDescription {
+                    if nsErrorCode != 216 && nsErrorDomain != "kAFAssistantErrorDomain" {
+                        Log.speech.error("Arabic recognition task error: \(errDescription)")
+                    }
+                    await self.finishArabicContinuation()
+                }
+            }
+        }
+        Log.speech.info("Arabic on-device speech recognizer started (on-device: \(recognizer.supportsOnDeviceRecognition))")
+        return chunks
+    }
+
+    private func updateArabicText(_ text: String, isFinal: Bool) {
+        finalizedText = text
+        chunkContinuation?.yield(TranscriptionChunk(text: text, isFinal: isFinal))
+        if isFinal {
+            chunkContinuation?.finish()
+            chunkContinuation = nil
+        }
+    }
+
+    private func finishArabicContinuation() {
+        if !finalizedText.isEmpty {
+            chunkContinuation?.yield(TranscriptionChunk(text: finalizedText, isFinal: true))
+        }
+        chunkContinuation?.finish()
+        chunkContinuation = nil
+    }
+
+    private func startModern(
+        chunkContinuation: AsyncThrowingStream<TranscriptionChunk, Error>.Continuation,
+        chunks: AsyncThrowingStream<TranscriptionChunk, Error>
+    ) async throws -> AsyncThrowingStream<TranscriptionChunk, Error> {
         guard SpeechTranscriber.isAvailable else {
             throw TranscriptionError.localeUnsupported(locale)
         }
@@ -51,27 +135,11 @@ actor AppleSpeechEngine: TranscriptionEngine {
         let (inputStream, inputContinuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.inputContinuation = inputContinuation
 
-        // Bias the recognizer toward the dictionary's words before it hears anything. This
-        // is a nudge, not a guarantee — `DictionaryCorrector` is the pass that actually
-        // enforces spelling — but it's free and it catches things a post-hoc rewrite can't,
-        // like a name the engine would otherwise split into two ordinary words.
-        //
-        // The list is capped at `DictionaryCorrector.biasLimit`. A long context list makes
-        // these models drift: on quiet or ambiguous audio they start emitting the terms they
-        // were primed with, which is a far worse failure than the misspelling it prevents.
-        // Only the input-sequence initializers take a context up front, and this analyzer is
-        // fed by `analyzer.start(inputSequence:)` later — so the context is applied here
-        // instead. It must be set before any audio arrives to affect recognition.
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         self.analyzer = analyzer
         if let context = await Self.context() {
             try? await analyzer.setContext(context)
         }
-
-        finalizedText = ""
-
-        let (chunks, chunkContinuation) = AsyncThrowingStream<TranscriptionChunk, Error>.makeStream()
-        self.chunkContinuation = chunkContinuation
 
         // Drain the transcriber's results into our simpler chunk stream.
         resultsTask = Task { [weak self] in
@@ -97,26 +165,46 @@ actor AppleSpeechEngine: TranscriptionEngine {
     }
 
     func feed(_ chunk: AudioChunk) async {
-        inputContinuation?.yield(AnalyzerInput(buffer: chunk.buffer))
+        if isArabic {
+            sfRequest?.append(chunk.buffer)
+        } else {
+            inputContinuation?.yield(AnalyzerInput(buffer: chunk.buffer))
+        }
     }
 
     func finish() async {
-        inputContinuation?.finish()
-        inputContinuation = nil
+        if isArabic {
+            sfRequest?.endAudio()
+            try? await Task.sleep(for: .milliseconds(350))
+            if let continuation = chunkContinuation {
+                if !finalizedText.isEmpty {
+                    continuation.yield(TranscriptionChunk(text: finalizedText, isFinal: true))
+                }
+                continuation.finish()
+            }
+            chunkContinuation = nil
+            sfTask?.cancel()
+            sfTask = nil
+            sfRequest = nil
+            sfRecognizer = nil
+        } else {
+            inputContinuation?.finish()
+            inputContinuation = nil
 
-        do {
-            try await analyzer?.finalizeAndFinishThroughEndOfInput()
-        } catch {
-            Log.speech.error("finalize failed: \(error.localizedDescription)")
-            await analyzer?.cancelAndFinishNow()
+            do {
+                try await analyzer?.finalizeAndFinishThroughEndOfInput()
+            } catch {
+                Log.speech.error("finalize failed: \(error.localizedDescription)")
+                await analyzer?.cancelAndFinishNow()
+            }
+
+            chunkContinuation?.finish()
+            chunkContinuation = nil
+            resultsTask?.cancel()
+            resultsTask = nil
+            analyzer = nil
+            transcriber = nil
         }
-
-        chunkContinuation?.finish()
-        chunkContinuation = nil
-        resultsTask?.cancel()
-        resultsTask = nil
-        analyzer = nil
-        transcriber = nil
     }
 
     // MARK: - Result accumulation

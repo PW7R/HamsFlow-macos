@@ -116,6 +116,42 @@ struct MainWindow: View {
             // Live State Pill
             stateBadge
 
+            // Language Selector Menu
+            Menu {
+                ForEach(DictationLanguage.allCases) { lang in
+                    Button {
+                        settings.language = lang
+                    } label: {
+                        HStack {
+                            Text("\(lang.flag)  \(lang.displayName)")
+                            if settings.language == lang {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(settings.language.flag)
+                        .font(.system(size: 11))
+                    Text(settings.language.shortName)
+                        .font(.system(size: 11, weight: .medium))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundStyle(textMuted)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(bgSubtle.opacity(0.8), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(borderSubtle, lineWidth: 1)
+                )
+                .foregroundStyle(textPrimary)
+            }
+            .menuStyle(.borderlessButton)
+            .help("Dictation Language · Choose English or Arabic")
+
             // Shortcut Trigger Button
             Button {
                 SettingsWindowManager.shared.show(controller: controller)
@@ -328,6 +364,12 @@ struct MainWindow: View {
                 ActiveTimerView()
             } else {
                 HStack(spacing: 6) {
+                    Text("\(settings.language.flag) \(settings.language.shortName)")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(textPrimary)
+                    Text("•")
+                        .font(.system(size: 10))
+                        .foregroundStyle(textMuted.opacity(0.5))
                     Text(settings.engine.displayName)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(textMuted)

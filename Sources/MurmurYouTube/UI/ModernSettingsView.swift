@@ -24,6 +24,9 @@ struct ModernSettingsView: View {
                     // Header
                     headerSection
 
+                    // Dictation Language
+                    languageCard
+
                     // Push to Talk / Hotkey
                     hotkeyCard
 
@@ -85,6 +88,55 @@ struct ModernSettingsView: View {
             Spacer()
         }
         .padding(.bottom, 4)
+    }
+
+    // MARK: - Language Card
+
+    private var languageCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader(title: "Dictation Language", icon: "globe", subtitle: "Speech recognition language model")
+
+            HStack(spacing: 8) {
+                ForEach(DictationLanguage.allCases) { lang in
+                    let isSelected = settings.language == lang
+                    Button {
+                        settings.language = lang
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(lang.flag)
+                                .font(.system(size: 13))
+                            Text(lang.displayName)
+                                .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                        }
+                        .foregroundStyle(isSelected ? textPrimary : textMuted)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isSelected ? bgSubtle : Color.clear)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(isSelected ? textPrimary.opacity(0.4) : borderSubtle, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if settings.language == .arabic {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(red: 0.063, green: 0.725, blue: 0.506))
+                    Text("100% on-device offline Arabic speech recognition via Apple Speech Engine.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(textMuted)
+                }
+            }
+        }
+        .padding(16)
+        .background(cardBackground)
     }
 
     // MARK: - Hotkey Card

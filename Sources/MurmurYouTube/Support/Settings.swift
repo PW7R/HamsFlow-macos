@@ -1,6 +1,50 @@
 import Foundation
 import Observation
 
+/// Which language is used for on-device dictation.
+enum DictationLanguage: String, CaseIterable, Identifiable, Sendable {
+    case english = "en-US"
+    case arabic = "ar-SA"
+    case auto = "auto"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .english: return "English (US)"
+        case .arabic: return "العربية (Arabic)"
+        case .auto: return "Auto (System Locale)"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .english: return "English"
+        case .arabic: return "العربية"
+        case .auto: return "Auto"
+        }
+    }
+
+    var flag: String {
+        switch self {
+        case .english: return "🇺🇸"
+        case .arabic: return "🇸🇦"
+        case .auto: return "🌐"
+        }
+    }
+
+    var locale: Locale {
+        switch self {
+        case .english:
+            return Locale(identifier: "en-US")
+        case .arabic:
+            return Locale(identifier: "ar-SA")
+        case .auto:
+            return Locale.current
+        }
+    }
+}
+
 /// Which speech engine transcribes an utterance.
 enum SpeechEngineChoice: String, CaseIterable, Sendable {
     case apple
@@ -21,6 +65,10 @@ enum SpeechEngineChoice: String, CaseIterable, Sendable {
 @Observable
 final class Settings {
     static let shared = Settings()
+
+    var language: DictationLanguage {
+        didSet { defaults.set(language.rawValue, forKey: Keys.language) }
+    }
 
     var pushToTalkShortcut: PushToTalkShortcut {
         didSet {
@@ -74,6 +122,7 @@ final class Settings {
     private let defaults = UserDefaults.standard
 
     private enum Keys {
+        static let language = "dictationLanguage"
         static let pushToTalkShortcut = "pushToTalkShortcut"
         static let pushToTalkKey = "pushToTalkKey"
         static let cleanupEnabled = "cleanupEnabled"
@@ -84,6 +133,14 @@ final class Settings {
     }
 
     private init() {
+        if let raw = defaults.string(forKey: Keys.language),
+           let savedLang = DictationLanguage(rawValue: raw) {
+            language = savedLang
+        } else {
+            let preferred = Locale.preferredLanguages.first ?? ""
+            language = preferred.starts(with: "ar") ? .arabic : .english
+        }
+
         if let data = defaults.data(forKey: Keys.pushToTalkShortcut),
            let savedShortcut = try? JSONDecoder().decode(PushToTalkShortcut.self, from: data) {
             pushToTalkShortcut = savedShortcut

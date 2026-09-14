@@ -204,6 +204,12 @@ private struct MenuContent: View {
             }
         }
 
+        Picker("Language", selection: $settings.language) {
+            ForEach(DictationLanguage.allCases) { lang in
+                Text("\(lang.flag)  \(lang.displayName)").tag(lang)
+            }
+        }
+
         Toggle("Compare mode (both engines)", isOn: $settings.compareMode)
 
         if !settings.compareMode {
